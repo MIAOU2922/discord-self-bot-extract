@@ -1,0 +1,14 @@
+{
+  "name": "discord-export",
+  "version": "1.0.0",
+  "description": "Export Discord conversations to text files using a self-bot",
+  "main": "export_discord.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node export_discord.js"
+  },
+  "dependencies": {
+    "debug": "^4.4.3",
+    "discord.js-selfbot-v13": "^3.3.2"
+  }
+}
