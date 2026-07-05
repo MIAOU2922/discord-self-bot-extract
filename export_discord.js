@@ -38,7 +38,9 @@
 
 const { Client } = require('discord.js-selfbot-v13');
 const fs   = require('fs');
-const path = require('path');
+const path   = require('path');
+const https  = require('https');
+const http   = require('http');
 
 // ── Configuration ──────────────────────────────────────────────────────────
 
@@ -50,6 +52,11 @@ const MESSAGE_LIMIT = null;
 
 /** Noms de salons à ignorer (mode export complet uniquement) */
 const IGNORE_CHANNELS = [];
+
+/** Extensions média détectées dans les liens externes */
+const MEDIA_EXTS  = /\.(jpg|jpeg|png|gif|webp|svg|bmp|mp4|webm|mov|avi|mkv|gifv)(\?.*)?$/i;
+/** Domaines connus d'hébergement média */
+const MEDIA_HOSTS = /(tenor\.com|giphy\.com|imgur\.com|gyazo\.com|prnt\.sc|i\.redd\.it)/i;
 
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -80,6 +87,20 @@ function parseDiscordUrl(url) {
 /** Rend une chaîne valide comme nom de fichier/dossier */
 function sanitize(str) {
   return (str || 'inconnu').replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 100);
+}
+
+/** Nettoie un nom de fichier pour le système de fichiers */
+function sanitizeFilename(str) {
+  return (str || 'fichier').replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 200);
+}
+
+/** Extrait l'extension d'une URL (jpg, png, mp4, etc.) */
+function extFromUrl(url) {
+  try {
+    const p = new URL(url).pathname;
+    const m = p.match(/\.(\w+)(?:\?|$)/);
+    return m ? m[1].toLowerCase() : 'bin';
+  } catch { return 'bin'; }
 }
 
 /** Nom de fichier/dossier au format <nom>_<id> */
@@ -137,6 +158,129 @@ function formatMessage(msg) {
   }
 
   return lines.join('\n');
+}
+
+/**
+ * Télécharge un fichier depuis une URL vers un chemin local.
+ * Gère les redirections HTTP.
+ * @param {string} url
+ * @param {string} destPath
+ * @returns {Promise<void>}
+ */
+function downloadFile(url, destPath) {
+  return new Promise((resolve, reject) => {
+    const proto = url.startsWith('https') ? https : http;
+    const req = proto.get(url, { timeout: 30000 }, (res) => {
+      if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307) {
+        const loc = res.headers.location;
+        if (loc) { downloadFile(loc, destPath).then(resolve).catch(reject); }
+        else { reject(new Error('Redirection sans Location')); }
+        return;
+      }
+      if (res.statusCode !== 200) {
+        reject(new Error(`HTTP ${res.statusCode}`));
+        return;
+      }
+      const file = fs.createWriteStream(destPath);
+      res.pipe(file);
+      file.on('finish', () => { file.close(); resolve(); });
+      file.on('error', (e) => { fs.unlink(destPath, () => {}); reject(e); });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Timeout')); });
+  });
+}
+
+/**
+ * Télécharge tous les médias d'une liste de messages dans un dossier.
+ * Inclut : pièces jointes, embeds (images/vignettes/vidéos), stickers,
+ * et liens externes d'image/vidéo/gif dans le contenu des messages.
+ * @param {import('discord.js-selfbot-v13').Message[]} messages
+ * @param {string} mediaFolder  dossier de destination
+ * @returns {Promise<number>} nombre de fichiers téléchargés
+ */
+async function downloadChannelMedia(messages, mediaFolder) {
+  const downloaded = new Set();
+  fs.mkdirSync(mediaFolder, { recursive: true });
+  let count = 0;
+
+  for (const msg of messages) {
+    const urls = [];
+
+    // 1. Pièces jointes Discord
+    for (const att of msg.attachments.values()) {
+      const ext = extFromUrl(att.url);
+      urls.push({
+        url:  att.url,
+        name: `${msg.id}_${sanitizeFilename(att.name || 'attachment')}.${ext}`
+      });
+    }
+
+    // 2. Embeds : images, vignettes, vidéos
+    for (const embed of msg.embeds) {
+      if (embed.image?.url) {
+        urls.push({
+          url:  embed.image.url,
+          name: `${msg.id}_embed_image.${extFromUrl(embed.image.url)}`
+        });
+      }
+      if (embed.thumbnail?.url) {
+        urls.push({
+          url:  embed.thumbnail.url,
+          name: `${msg.id}_embed_thumb.${extFromUrl(embed.thumbnail.url)}`
+        });
+      }
+      if (embed.video?.url) {
+        urls.push({
+          url:  embed.video.url,
+          name: `${msg.id}_embed_video.${extFromUrl(embed.video.url)}`
+        });
+      }
+    }
+
+    // 3. Stickers
+    for (const sticker of msg.stickers.values()) {
+      const stickerUrl = sticker.url
+        || `https://media.discordapp.net/stickers/${sticker.id}.png`;
+      urls.push({
+        url:  stickerUrl,
+        name: `${msg.id}_sticker_${sanitizeFilename(sticker.name || sticker.id)}.png`
+      });
+    }
+
+    // 4. Liens externes image/vidéo/gif dans le contenu
+    const content = msg.content || '';
+    const linkRegex = /(https?:\/\/[^\s<>"{}|\\^`]+)/gi;
+    let match;
+    while ((match = linkRegex.exec(content)) !== null) {
+      const linkUrl = match[0];
+      if (MEDIA_EXTS.test(linkUrl) || MEDIA_HOSTS.test(linkUrl)) {
+        const filePart = linkUrl.split('/').pop()?.split('?')[0] || 'media';
+        const ext = extFromUrl(linkUrl);
+        urls.push({
+          url:  linkUrl,
+          name: `${msg.id}_link_${sanitizeFilename(filePart)}.${ext}`
+        });
+      }
+    }
+
+    // Téléchargement effectif
+    for (const { url, name } of urls) {
+      if (downloaded.has(url)) continue;
+      downloaded.add(url);
+      const filepath = path.join(mediaFolder, name);
+      // Évite de re-télécharger un fichier déjà présent
+      if (fs.existsSync(filepath)) continue;
+      try {
+        await downloadFile(url, filepath);
+        count++;
+      } catch (_err) {
+        // échec silencieux pour un média individuel
+      }
+    }
+  }
+
+  return count;
 }
 
 /**
@@ -225,7 +369,13 @@ async function exportChannel(channel, folder) {
   }
 
   fs.writeFileSync(filepath, lines.join('\n'), 'utf8');
-  console.log(`  ✓ ${fileName}.txt → ${messages.length} messages`);
+
+  // Téléchargement des médias dans un dossier adjacent
+  const mediaFolder = path.join(folder, `${fileName}_files`);
+  const mediaCount = await downloadChannelMedia(messages, mediaFolder);
+
+  const mediaInfo = mediaCount > 0 ? ` + ${mediaCount} médias` : '';
+  console.log(`  ✓ ${fileName}.txt → ${messages.length} messages${mediaInfo}`);
   return messages.length;
 }
 

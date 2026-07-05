@@ -24,10 +24,24 @@ Utilise [discord.js-selfbot-v13](https://github.com/aiko-chan-ai/discord.js-self
 ```js
 window.webpackChunkdiscord_app.push([
   [Math.random()], {},
-  req => { window.discord_token = Object.values(req.c)
-    .find(x => x?.exports?.default?.getToken)
-    ?.exports?.default?.getToken() }
-]); console.log(window.discord_token);
+  req => {
+    for (const k in req.c) {
+      const mod = req.c[k];
+      // Cherche getToken dans exports.default, exports.Z, exports.__esModule
+      const tokenFn = mod?.exports?.default?.getToken
+        || mod?.exports?.Z?.getToken
+        || mod?.exports?.getToken;
+      if (typeof tokenFn === 'function') {
+        const t = tokenFn();
+        if (t && typeof t === 'string' && t.length > 20) {
+          window.discord_token = t;
+          break;
+        }
+      }
+    }
+  }
+]);
+console.log(window.discord_token);
 ```
 
 4. Copie la valeur affichée (commence par `MT...` ou similaire)
