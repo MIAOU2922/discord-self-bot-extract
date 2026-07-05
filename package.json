@@ -5,7 +5,7 @@
   "main": "export_discord.js",
   "type": "commonjs",
   "scripts": {
-    "start": "node export_discord.js"
+    "export": "node export_discord.js"
   },
   "dependencies": {
     "debug": "^4.4.3",

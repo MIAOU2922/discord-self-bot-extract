@@ -1,69 +1,64 @@
 /**
  * Discord Export — discord.js-selfbot-v13
  * ----------------------------------------
- * Exporte les conversations complètes (messages envoyés + reçus).
+ * Exports complete conversations (sent + received messages).
  *
- * AVERTISSEMENT : L'utilisation d'un self-bot viole les CGU de Discord.
- * À utiliser uniquement pour usage personnel à tes propres risques.
+ * WARNING: Using a self-bot violates Discord's ToS.
+ * Use only for personal use at your own risk.
  *
- * Installation :
+ * Installation:
  *   npm install
  *
- * Utilisation :
- *   # Tout exporter (serveurs + DMs)
- *   node export_discord.js
+ * Usage:
+ *   # Export everything (servers + DMs)
+ *   npm run export
  *
- *   # Un salon précis (channel d'un serveur ou DM)
- *   node export_discord.js https://discord.com/channels/GUILD_ID/CHANNEL_ID
- *   node export_discord.js https://discord.com/channels/@me/CHANNEL_ID
+ *   # A specific channel (server channel or DM)
+ *   npm run export -- https://discord.com/channels/GUILD_ID/CHANNEL_ID
+ *   npm run export -- https://discord.com/channels/@me/CHANNEL_ID
  *
- *   # Tous les salons d'un serveur
- *   node export_discord.js https://discord.com/channels/GUILD_ID
+ *   # All channels of a server
+ *   npm run export -- https://discord.com/channels/GUILD_ID
  *
- * Nommage des fichiers/dossiers : <nom>_<id>
- *
- * Comment obtenir ton user token :
- *   1. Ouvre Discord dans ton navigateur (discord.com/app)
- *   2. F12 → Console → colle :
- *      window.webpackChunkdiscord_app.push([
- *        [Math.random()], {},
- *        req => { window.discord_token = Object.values(req.c)
- *          .find(x => x?.exports?.default?.getToken)
- *          ?.exports?.default?.getToken() }
- *      ]); console.log(window.discord_token);
- *   3. Copie la valeur affichée
+ * File/folder naming: <name>_<id>
  */
 
 'use strict';
 
 const { Client } = require('discord.js-selfbot-v13');
-const fs   = require('fs');
-const path   = require('path');
-const https  = require('https');
-const http   = require('http');
+const fs       = require('fs');
+const path     = require('path');
+const https    = require('https');
+const http     = require('http');
+const readline = require('readline');
 
 // ── Configuration ──────────────────────────────────────────────────────────
 
-const TOKEN      = process.env.DISCORD_TOKEN || 'PASTE_YOUR_USER_TOKEN_HERE';
+/** Token: environment variable first, otherwise prompted interactively */
+const TOKEN = process.env.DISCORD_TOKEN || null;
+
 const OUTPUT_DIR = 'discord_export';
 
-/** null = tout exporter, sinon nb max de messages par salon */
+/** null = export all, otherwise max messages per channel */
 const MESSAGE_LIMIT = null;
 
-/** Noms de salons à ignorer (mode export complet uniquement) */
+/** Channel names to skip (full export mode only) */
 const IGNORE_CHANNELS = [];
 
-/** Extensions média détectées dans les liens externes */
+/** Download media — set interactively, default true */
+let DOWNLOAD_MEDIA = true;
+
+/** Media extensions detected in external links */
 const MEDIA_EXTS  = /\.(jpg|jpeg|png|gif|webp|svg|bmp|mp4|webm|mov|avi|mkv|gifv)(\?.*)?$/i;
-/** Domaines connus d'hébergement média */
+/** Known media hosting domains */
 const MEDIA_HOSTS = /(tenor\.com|giphy\.com|imgur\.com|gyazo\.com|prnt\.sc|i\.redd\.it)/i;
 
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
- * Parse une URL Discord et retourne { type, guildId, channelId }
+ * Parse a Discord URL and return { type, guildId, channelId }
  *
- * Types possibles :
+ * Possible types:
  *   'guild'         → https://discord.com/channels/GUILD_ID
  *   'guild_channel' → https://discord.com/channels/GUILD_ID/CHANNEL_ID
  *   'dm'            → https://discord.com/channels/@me/CHANNEL_ID
@@ -84,17 +79,17 @@ function parseDiscordUrl(url) {
   return { type: 'guild', guildId: first, channelId: null };
 }
 
-/** Rend une chaîne valide comme nom de fichier/dossier */
+/** Make a string safe for file/folder names */
 function sanitize(str) {
-  return (str || 'inconnu').replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 100);
+  return (str || 'unknown').replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 100);
 }
 
-/** Nettoie un nom de fichier pour le système de fichiers */
+/** Clean a filename for the filesystem */
 function sanitizeFilename(str) {
-  return (str || 'fichier').replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 200);
+  return (str || 'file').replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 200);
 }
 
-/** Extrait l'extension d'une URL (jpg, png, mp4, etc.) */
+/** Extract the extension from a URL (jpg, png, mp4, etc.) */
 function extFromUrl(url) {
   try {
     const p = new URL(url).pathname;
@@ -103,12 +98,12 @@ function extFromUrl(url) {
   } catch { return 'bin'; }
 }
 
-/** Nom de fichier/dossier au format <nom>_<id> */
+/** File/folder name in <name>_<id> format */
 function nameWithId(name, id) {
   return `${sanitize(name)}_${id}`;
 }
 
-/** Formate un message Discord en texte lisible */
+/** Format a Discord message as human-readable text */
 function formatMessage(msg) {
   const ts = msg.createdAt.toISOString().replace('T', ' ').slice(0, 19);
   const author = msg.author;
@@ -119,7 +114,7 @@ function formatMessage(msg) {
 
   const lines = [];
 
-  // Résolution des mentions
+  // Resolve mentions
   let content = msg.content || '';
   msg.mentions.users.forEach((u) => {
     const disp = u.globalName || u.username;
@@ -132,9 +127,9 @@ function formatMessage(msg) {
     lines.push(`[${ts}] ${name}:`);
   }
 
-  // Pièces jointes
+  // Attachments
   msg.attachments.forEach((att) => {
-    lines.push(`  [Fichier] ${att.name} → ${att.url}`);
+    lines.push(`  [File] ${att.name} → ${att.url}`);
   });
 
   // Embeds
@@ -150,19 +145,19 @@ function formatMessage(msg) {
     lines.push(`  [Sticker] ${sticker.name}`);
   });
 
-  // Message cité (réponse)
+  // Reply reference
   if (msg.reference && msg.mentions.repliedUser) {
-    const refContent = msg.content?.slice(0, 60) || '[embed/fichier]';
+    const refContent = msg.content?.slice(0, 60) || '[embed/file]';
     const refAuthor  = msg.mentions.repliedUser.username;
-    lines[0] += `  ↩ (répond à @${refAuthor}: ${refContent})`;
+    lines[0] += `  ↩ (replying to @${refAuthor}: ${refContent})`;
   }
 
   return lines.join('\n');
 }
 
 /**
- * Télécharge un fichier depuis une URL vers un chemin local.
- * Gère les redirections HTTP.
+ * Download a file from a URL to a local path.
+ * Handles HTTP redirects.
  * @param {string} url
  * @param {string} destPath
  * @returns {Promise<void>}
@@ -174,7 +169,7 @@ function downloadFile(url, destPath) {
       if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307) {
         const loc = res.headers.location;
         if (loc) { downloadFile(loc, destPath).then(resolve).catch(reject); }
-        else { reject(new Error('Redirection sans Location')); }
+        else { reject(new Error('Redirect without Location header')); }
         return;
       }
       if (res.statusCode !== 200) {
@@ -192,12 +187,12 @@ function downloadFile(url, destPath) {
 }
 
 /**
- * Télécharge tous les médias d'une liste de messages dans un dossier.
- * Inclut : pièces jointes, embeds (images/vignettes/vidéos), stickers,
- * et liens externes d'image/vidéo/gif dans le contenu des messages.
+ * Download all media from a list of messages into a folder.
+ * Includes: attachments, embeds (images/thumbnails/videos), stickers,
+ * and external image/video/gif links in message content.
  * @param {import('discord.js-selfbot-v13').Message[]} messages
- * @param {string} mediaFolder  dossier de destination
- * @returns {Promise<number>} nombre de fichiers téléchargés
+ * @param {string} mediaFolder  destination folder
+ * @returns {Promise<number>} number of files downloaded
  */
 async function downloadChannelMedia(messages, mediaFolder) {
   const downloaded = new Set();
@@ -207,7 +202,7 @@ async function downloadChannelMedia(messages, mediaFolder) {
   for (const msg of messages) {
     const urls = [];
 
-    // 1. Pièces jointes Discord
+    // 1. Discord attachments
     for (const att of msg.attachments.values()) {
       const ext = extFromUrl(att.url);
       urls.push({
@@ -216,7 +211,7 @@ async function downloadChannelMedia(messages, mediaFolder) {
       });
     }
 
-    // 2. Embeds : images, vignettes, vidéos
+    // 2. Embeds: images, thumbnails, videos
     for (const embed of msg.embeds) {
       if (embed.image?.url) {
         urls.push({
@@ -248,7 +243,7 @@ async function downloadChannelMedia(messages, mediaFolder) {
       });
     }
 
-    // 4. Liens externes image/vidéo/gif dans le contenu
+    // 4. External image/video/gif links in message content
     const content = msg.content || '';
     const linkRegex = /(https?:\/\/[^\s<>"{}|\\^`]+)/gi;
     let match;
@@ -264,18 +259,18 @@ async function downloadChannelMedia(messages, mediaFolder) {
       }
     }
 
-    // Téléchargement effectif
+    // Actual download
     for (const { url, name } of urls) {
       if (downloaded.has(url)) continue;
       downloaded.add(url);
       const filepath = path.join(mediaFolder, name);
-      // Évite de re-télécharger un fichier déjà présent
+      // Skip already-downloaded files
       if (fs.existsSync(filepath)) continue;
       try {
         await downloadFile(url, filepath);
         count++;
       } catch (_err) {
-        // échec silencieux pour un média individuel
+        // silent fail for individual media
       }
     }
   }
@@ -284,7 +279,7 @@ async function downloadChannelMedia(messages, mediaFolder) {
 }
 
 /**
- * Récupère TOUS les messages d'un channel par pagination
+ * Fetch ALL messages from a channel via pagination
  * @param {import('discord.js-selfbot-v13').TextChannel | import('discord.js-selfbot-v13').DMChannel} channel
  * @returns {Promise<import('discord.js-selfbot-v13').Message[]>}
  */
@@ -304,22 +299,22 @@ async function fetchAllMessages(channel) {
     if (batch.size < 100) break;
     if (MESSAGE_LIMIT && messages.length >= MESSAGE_LIMIT) break;
 
-    // Le plus ancien ID de ce batch → fetch la page suivante
+    // Oldest ID of this batch → fetch next page
     before = batch.last().id;
   }
 
   if (MESSAGE_LIMIT) messages.splice(MESSAGE_LIMIT);
 
-  // Du plus ancien au plus récent
+  // Oldest to newest
   return messages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
 }
 
 /**
- * Écrit les messages d'un channel dans un fichier texte.
- * Le nom du fichier est toujours <nom>_<id>.txt
- * @param {object} channel  objet Channel discord.js
- * @param {string} folder   dossier de destination
- * @returns {Promise<number>} nombre de messages écrits
+ * Write a channel's messages to a text file.
+ * The filename is always <name>_<id>.txt
+ * @param {object} channel  discord.js Channel object
+ * @param {string} folder   destination folder
+ * @returns {Promise<number>} number of messages written
  */
 async function exportChannel(channel, folder) {
   const fileName = nameWithId(channel.name || 'dm', channel.id);
@@ -330,15 +325,15 @@ async function exportChannel(channel, folder) {
     messages = await fetchAllMessages(channel);
   } catch (err) {
     if (err.code === 50013 || err.status === 403) {
-      console.log(`  ✗ #${channel.name || channel.id} → accès refusé`);
+      console.log(`  ✗ #${channel.name || channel.id} → access denied`);
       return 0;
     }
-    console.log(`  ✗ #${channel.name || channel.id} → erreur : ${err.message}`);
+    console.log(`  ✗ #${channel.name || channel.id} → error: ${err.message}`);
     return 0;
   }
 
   if (!messages.length) {
-    console.log(`  - #${channel.name || channel.id} → vide`);
+    console.log(`  - #${channel.name || channel.id} → empty`);
     return 0;
   }
 
@@ -348,18 +343,18 @@ async function exportChannel(channel, folder) {
   lines.push('='.repeat(60));
   if (channel.type === 'DM') {
     const other = channel.recipient;
-    lines.push(`DM avec  : ${other.globalName || other.username} (@${other.username})`);
+    lines.push(`DM with  : ${other.globalName || other.username} (@${other.username})`);
     lines.push(`Channel ID : ${channel.id}`);
   } else if (channel.type === 'GROUP_DM') {
-    lines.push(`Groupe DM : ${channel.name || 'Sans nom'}`);
+    lines.push(`Group DM : ${channel.name || 'Unnamed'}`);
     lines.push(`Channel ID : ${channel.id}`);
     const members = channel.recipients.map((r) => r.username).join(', ');
-    lines.push(`Membres   : ${members}`);
+    lines.push(`Members   : ${members}`);
   } else {
-    lines.push(`Salon    : #${channel.name}  (id: ${channel.id})`);
-    if (channel.guild) lines.push(`Serveur  : ${channel.guild.name}  (id: ${channel.guild.id})`);
+    lines.push(`Channel  : #${channel.name}  (id: ${channel.id})`);
+    if (channel.guild) lines.push(`Server   : ${channel.guild.name}  (id: ${channel.guild.id})`);
   }
-  lines.push(`Exporté  : ${new Date().toISOString().replace('T', ' ').slice(0, 19)}`);
+  lines.push(`Exported : ${new Date().toISOString().replace('T', ' ').slice(0, 19)}`);
   lines.push(`Messages : ${messages.length}`);
   lines.push('='.repeat(60));
   lines.push('');
@@ -370,30 +365,33 @@ async function exportChannel(channel, folder) {
 
   fs.writeFileSync(filepath, lines.join('\n'), 'utf8');
 
-  // Téléchargement des médias dans un dossier adjacent
-  const mediaFolder = path.join(folder, `${fileName}_files`);
-  const mediaCount = await downloadChannelMedia(messages, mediaFolder);
+  // Download media into an adjacent folder (if enabled)
+  let mediaCount = 0;
+  if (DOWNLOAD_MEDIA) {
+    const mediaFolder = path.join(folder, `${fileName}_files`);
+    mediaCount = await downloadChannelMedia(messages, mediaFolder);
+  }
 
-  const mediaInfo = mediaCount > 0 ? ` + ${mediaCount} médias` : '';
+  const mediaInfo = mediaCount > 0 ? ` + ${mediaCount} media` : '';
   console.log(`  ✓ ${fileName}.txt → ${messages.length} messages${mediaInfo}`);
   return messages.length;
 }
 
-// Types de channels de serveur à traiter (hors catégories et hors fils)
+// Server channel types to process (excluding categories and threads)
 const EXPORTABLE_TYPES = new Set([
   'GUILD_TEXT',
   'GUILD_NEWS',
-  'GUILD_VOICE',        // vocal avec messages texte
-  'GUILD_STAGE_VOICE',  // stage avec messages texte
+  'GUILD_VOICE',        // voice channel with text messages
+  'GUILD_STAGE_VOICE',  // stage channel with text messages
 ]);
 const FORUM_TYPES = new Set(['GUILD_FORUM', 'GUILD_MEDIA']);
 
 /**
- * Exporte un channel de type Forum ou Media :
- * crée un dossier <forum_nom>_<id>/ et un fichier par post (thread).
- * @param {object} forumCh  channel de type GUILD_FORUM / GUILD_MEDIA
- * @param {string} parentFolder  dossier parent (catégorie ou racine du serveur)
- * @returns {Promise<number>} total de messages
+ * Export a Forum or Media channel:
+ * creates a <forum_name>_<id>/ folder with one file per post (thread).
+ * @param {object} forumCh  GUILD_FORUM / GUILD_MEDIA channel
+ * @param {string} parentFolder  parent folder (category or server root)
+ * @returns {Promise<number>} total message count
  */
 async function exportForumChannel(forumCh, parentFolder) {
   const forumFolder = path.join(parentFolder, nameWithId(forumCh.name, forumCh.id));
@@ -401,9 +399,9 @@ async function exportForumChannel(forumCh, parentFolder) {
 
   console.log(`  [Forum] #${forumCh.name}_${forumCh.id}/`);
 
-  // Threads actifs
+  // Active threads
   const activeResult   = await forumCh.threads.fetchActive().catch(() => null);
-  // Threads archivés (jusqu'à 100 par appel — on pagine)
+  // Archived threads (up to 100 per call — paginated)
   const allThreads = new Map();
   if (activeResult) activeResult.threads.forEach((t) => allThreads.set(t.id, t));
 
@@ -430,19 +428,19 @@ async function exportForumChannel(forumCh, parentFolder) {
 }
 
 /**
- * Exporte un serveur entier en respectant son organisation :
- *   discord_export/<serveur>_<id>/
- *     <categorie>_<id>/          ← si le salon a une catégorie
- *       <salon>_<id>.txt         ← salon texte / vocal
- *       <forum>_<id>/            ← forum/media = dossier
+ * Export an entire server, preserving its organization:
+ *   discord_export/<server>_<id>/
+ *     <category>_<id>/          ← if the channel has a category
+ *       <channel>_<id>.txt      ← text / voice channel
+ *       <forum>_<id>/           ← forum/media = folder
  *         <post>_<id>.txt
- *     <salon-sans-categorie>_<id>.txt   ← directement à la racine
+ *     <channel-without-category>_<id>.txt   ← directly at root
  */
 async function exportGuildById(client, guildId) {
   const guild = client.guilds.cache.get(guildId)
     || await client.guilds.fetch(guildId).catch(() => null);
   if (!guild) {
-    console.error(`ERREUR : Serveur introuvable (id: ${guildId}).`);
+    console.error(`ERROR: Server not found (id: ${guildId}).`);
     return;
   }
 
@@ -451,16 +449,16 @@ async function exportGuildById(client, guildId) {
   const guildFolder = path.join(OUTPUT_DIR, nameWithId(guild.name, guild.id));
   fs.mkdirSync(guildFolder, { recursive: true });
 
-  console.log(`\n[Serveur] ${guild.name}  (id: ${guild.id})`);
-  console.log(`  Dossier : ${guildFolder}`);
+  console.log(`\n[Server] ${guild.name}  (id: ${guild.id})`);
+  console.log(`  Folder : ${guildFolder}`);
 
-  // Carte des catégories id → objet channel
+  // Map of categories id → channel object
   const categories = new Map();
   guild.channels.cache.forEach((ch) => {
     if (ch.type === 'GUILD_CATEGORY') categories.set(ch.id, ch);
   });
 
-  // Salons à exporter, triés par position dans le serveur
+  // Channels to export, sorted by server position
   const toExport = guild.channels.cache
     .filter((c) =>
       (EXPORTABLE_TYPES.has(c.type) || FORUM_TYPES.has(c.type)) &&
@@ -468,17 +466,17 @@ async function exportGuildById(client, guildId) {
     )
     .sort((a, b) => (a.rawPosition ?? 0) - (b.rawPosition ?? 0));
 
-  console.log(`  ${toExport.size} salon(s) à exporter\n`);
+  console.log(`  ${toExport.size} channel(s) to export\n`);
 
   let total = 0;
   for (const [, ch] of toExport) {
-    // Résolution du dossier parent (catégorie ou racine du serveur)
+    // Resolve parent folder (category or server root)
     let targetFolder = guildFolder;
     if (ch.parentId && categories.has(ch.parentId)) {
       const cat = categories.get(ch.parentId);
       const catLabel = `  [Cat] ${cat.name}_${cat.id}/`;
       targetFolder = path.join(guildFolder, nameWithId(cat.name, cat.id));
-      // On affiche la catégorie seulement à la première fois qu'on la rencontre
+      // Display category only the first time we encounter it
       if (!fs.existsSync(targetFolder)) {
         fs.mkdirSync(targetFolder, { recursive: true });
         console.log(catLabel);
@@ -492,33 +490,33 @@ async function exportGuildById(client, guildId) {
     }
   }
 
-  console.log(`\n→ ${total} messages exportés pour ${guild.name}`);
+  console.log(`\n→ ${total} messages exported for ${guild.name}`);
 }
 
 /**
- * Exporte un seul salon (serveur ou DM) identifié par son ID.
- * Si c'est un forum, exporte tous ses posts.
+ * Export a single channel (server or DM) identified by its ID.
+ * If it's a forum, exports all its posts.
  */
 async function exportChannelById(client, channelId) {
   const ch = client.channels.cache.get(channelId)
     || await client.channels.fetch(channelId).catch(() => null);
   if (!ch) {
-    console.error(`ERREUR : Channel introuvable (id: ${channelId}).`);
+    console.error(`ERROR: Channel not found (id: ${channelId}).`);
     return;
   }
 
-  // Dossier de sortie : racine du serveur (sans arborescence catégorie pour export ciblé)
+  // Output folder: server root or DM subfolder
   let baseFolder;
   if (ch.guild) {
     baseFolder = path.join(OUTPUT_DIR, nameWithId(ch.guild.name, ch.guild.id));
   } else {
-    baseFolder = path.join(OUTPUT_DIR, 'DMs');
+    baseFolder = path.join(OUTPUT_DIR, 'DMs', dmFolderName(ch));
   }
   fs.mkdirSync(baseFolder, { recursive: true });
 
   console.log(`\n[Channel] #${ch.name || ch.id}  (id: ${ch.id})`);
-  if (ch.guild) console.log(`[Serveur] ${ch.guild.name}  (id: ${ch.guild.id})`);
-  console.log(`  Dossier : ${baseFolder}\n`);
+  if (ch.guild) console.log(`[Server] ${ch.guild.name}  (id: ${ch.guild.id})`);
+  console.log(`  Folder : ${baseFolder}\n`);
 
   let count = 0;
   if (FORUM_TYPES.has(ch.type)) {
@@ -526,64 +524,153 @@ async function exportChannelById(client, channelId) {
   } else {
     count = await exportChannel(ch, baseFolder);
   }
-  console.log(`\n→ ${count} messages exportés`);
+  console.log(`\n→ ${count} messages exported`);
 }
 
-/** Exporte tous les serveurs accessibles. */
+/** Export all accessible servers. */
 async function exportAllGuilds(client) {
-  console.log(`\n── SERVEURS (${client.guilds.cache.size}) ──────────────────────────────────`);
+  console.log(`\n── SERVERS (${client.guilds.cache.size}) ──────────────────────────────────`);
   for (const [, guild] of client.guilds.cache) {
     await exportGuildById(client, guild.id);
   }
 }
 
-/** Exporte tous les DMs et groupes DM ouverts. */
+/**
+ * Get a safe folder name for a DM channel.
+ * Uses the recipient's name for 1:1 DMs, group name for group DMs.
+ * @param {object} channel
+ * @returns {string}
+ */
+function dmFolderName(channel) {
+  if (channel.type === 'GROUP_DM') {
+    return nameWithId(channel.name || 'group', channel.id);
+  }
+  const recipient = channel.recipient;
+  const name = recipient?.username || recipient?.globalName || 'dm';
+  return nameWithId(name, channel.id);
+}
+
+/** Export all open DMs and group DMs. */
 async function exportAllDMs(client) {
-  console.log('\n── MESSAGES PRIVÉS (DMs) ─────────────────────────────');
+  console.log('\n── DIRECT MESSAGES (DMs) ─────────────────────────────');
   await client.relationships.fetch();
   const dmChannels = client.channels.cache.filter(
     (c) => c.type === 'DM' || c.type === 'GROUP_DM'
   );
-  console.log(`${dmChannels.size} conversation(s) DM\n`);
+  console.log(`${dmChannels.size} DM conversation(s)\n`);
 
-  const folder = path.join(OUTPUT_DIR, 'DMs');
-  fs.mkdirSync(folder, { recursive: true });
+  const dmsRoot = path.join(OUTPUT_DIR, 'DMs');
+  fs.mkdirSync(dmsRoot, { recursive: true });
 
   let total = 0;
   for (const [, ch] of dmChannels) {
-    total += await exportChannel(ch, folder);
+    const dmFolder = path.join(dmsRoot, dmFolderName(ch));
+    total += await exportChannel(ch, dmFolder);
   }
-  console.log(`\n→ ${total} messages DM exportés`);
+  console.log(`\n→ ${total} DM messages exported`);
+}
+
+/**
+ * Ask a question in the terminal and return the answer.
+ * @param {string} query
+ * @returns {Promise<string>}
+ */
+function askQuestion(query) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    rl.question(query, (answer) => { rl.close(); resolve(answer.trim()); });
+  });
+}
+
+/**
+ * Display instructions for obtaining a Discord token.
+ */
+function showTokenHelp() {
+  console.log('\n🔑  How to get your Discord token:');
+  console.log('   1. Open Discord in your browser (discord.com/app)');
+  console.log('   2. F12 → Console tab → paste this code:');
+  console.log(`
+      window.webpackChunkdiscord_app.push([
+        [Math.random()], {},
+        req => {
+          for (const k in req.c) {
+            const mod = req.c[k];
+            const tokenFn = mod?.exports?.default?.getToken
+              || mod?.exports?.Z?.getToken
+              || mod?.exports?.getToken;
+            if (typeof tokenFn === 'function') {
+              const t = tokenFn();
+              if (t && typeof t === 'string' && t.length > 20) {
+                window.discord_token = t;
+                break;
+              }
+            }
+          }
+        }
+      ]);
+      console.log(window.discord_token);
+`);
+  console.log('   3. Copy the displayed value (starts with "MT..." or similar)\n');
+}
+
+/**
+ * Interactive prompt: token (if missing), target URL, media download.
+ * @returns {Promise<{ token: string, urlArg: string|null, downloadMedia: boolean }>}
+ */
+async function promptUser() {
+  let token = TOKEN;
+  let urlArg = process.argv[2] || null;
+  let downloadMedia = true;
+
+  console.log('═'.repeat(55));
+  console.log('  Discord Export — Interactive');
+  console.log('═'.repeat(55));
+
+  // 1. Token
+  if (!token) {
+    showTokenHelp();
+    token = await askQuestion('👉  Paste your Discord token: ');
+    if (!token) {
+      console.error('❌  Token required. Aborting.');
+      process.exit(1);
+    }
+    console.log('');
+  } else {
+    console.log('🔑  Token found via DISCORD_TOKEN (environment variable)');
+  }
+
+  // 2. Target URL
+  if (!urlArg) {
+    console.log('');
+    console.log('📋  What do you want to export?');
+    console.log('   • Leave empty → FULL export (all servers + DMs)');
+    console.log('   • https://discord.com/channels/GUILD_ID              → an entire server');
+    console.log('   • https://discord.com/channels/GUILD_ID/CHANNEL_ID   → a specific channel');
+    console.log('   • https://discord.com/channels/@me/CHANNEL_ID        → a DM');
+    console.log('');
+    urlArg = await askQuestion('👉  Discord URL (or press Enter for full export): ');
+  }
+
+  // 3. Download media
+  console.log('');
+  const answer = await askQuestion('📁  Download media (images, videos, GIFs, stickers)? [Y/n]: ');
+  downloadMedia = !answer.toLowerCase().startsWith('n');
+  console.log('');
+
+  // Apply media choice at module level
+  DOWNLOAD_MEDIA = downloadMedia;
+
+  return { token, urlArg: urlArg || null, downloadMedia };
 }
 
 async function main() {
-  if (TOKEN === 'PASTE_YOUR_USER_TOKEN_HERE') {
-    console.error('ERREUR : Renseigne ton user token.');
-    console.error('\nComment l\'obtenir :');
-    console.error('  1. Ouvre Discord dans ton navigateur (discord.com/app)');
-    console.error('  2. F12 → Console → colle :');
-    console.error(`
-  window.webpackChunkdiscord_app.push([
-    [Math.random()], {},
-    req => { window.discord_token = Object.values(req.c)
-      .find(x => x?.exports?.default?.getToken)
-      ?.exports?.default?.getToken() }
-  ]); console.log(window.discord_token);
-`);
-    console.error('  3. Copie la valeur affichée');
-    console.error('\nPuis lance :');
-    console.error('  set DISCORD_TOKEN=ton_token_ici  (CMD)');
-    console.error('  node export_discord.js [url_discord]');
-    process.exit(1);
-  }
+  const { token, urlArg, downloadMedia } = await promptUser();
 
-  // Lecture de l'URL optionnelle passée en argument
-  const urlArg  = process.argv[2] || null;
-  const parsed  = urlArg ? parseDiscordUrl(urlArg) : null;
-
+  // URL validation
+  const parsed = urlArg ? parseDiscordUrl(urlArg) : null;
   if (urlArg && !parsed) {
-    console.error(`ERREUR : URL Discord non reconnue : ${urlArg}`);
-    console.error('Formats acceptés :');
+    console.error(`❌  Unrecognized Discord URL: ${urlArg}`);
+    console.error('Accepted formats:');
     console.error('  https://discord.com/channels/GUILD_ID');
     console.error('  https://discord.com/channels/GUILD_ID/CHANNEL_ID');
     console.error('  https://discord.com/channels/@me/CHANNEL_ID');
@@ -595,15 +682,15 @@ async function main() {
   client.on('ready', async () => {
     const me = client.user;
     console.log('='.repeat(60));
-    console.log(`Connecté : ${me.globalName || me.username} (@${me.username})`);
+    console.log(`Connected: ${me.globalName || me.username} (@${me.username})`);
     console.log(`ID       : ${me.id}`);
-    console.log(`Sortie   : ${path.resolve(OUTPUT_DIR)}`);
+    console.log(`Output   : ${path.resolve(OUTPUT_DIR)}`);
     if (parsed) {
-      console.log(`Mode     : export ciblé (${parsed.type})`);
+      console.log(`Mode     : targeted export (${parsed.type})`);
       if (parsed.guildId)   console.log(`Guild ID  : ${parsed.guildId}`);
       if (parsed.channelId) console.log(`Channel ID: ${parsed.channelId}`);
     } else {
-      console.log('Mode     : export complet (serveurs + DMs)');
+      console.log('Mode     : full export (servers + DMs)');
     }
     console.log('='.repeat(60));
 
@@ -611,31 +698,31 @@ async function main() {
 
     try {
       if (!parsed) {
-        // Aucune URL → export complet
+        // No URL → full export
         await exportAllGuilds(client);
         await exportAllDMs(client);
       } else if (parsed.type === 'guild') {
-        // URL de serveur → tous ses salons
+        // Server URL → all its channels
         await exportGuildById(client, parsed.guildId);
       } else if (parsed.type === 'guild_channel') {
-        // URL d'un salon de serveur précis
+        // Specific server channel URL
         await exportChannelById(client, parsed.channelId);
       } else if (parsed.type === 'dm') {
-        // URL d'un DM
+        // DM URL
         await exportChannelById(client, parsed.channelId);
       }
     } catch (err) {
-      console.error('\nErreur inattendue :', err);
+      console.error('\nUnexpected error:', err);
     }
 
     console.log('\n' + '='.repeat(60));
-    console.log('Export terminé !');
-    console.log(`Fichiers dans : ${path.resolve(OUTPUT_DIR)}`);
+    console.log('Export complete!');
+    console.log(`Files in: ${path.resolve(OUTPUT_DIR)}`);
     client.destroy();
   });
 
-  client.login(TOKEN).catch((err) => {
-    console.error('Impossible de se connecter :', err.message);
+  client.login(token).catch((err) => {
+    console.error('Unable to connect:', err.message);
     process.exit(1);
   });
 }
